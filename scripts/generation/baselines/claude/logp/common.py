@@ -39,7 +39,7 @@ MANIFEST_DIR = OUTPUT_DIR / "manifests"
 
 MODEL = os.environ.get(
     "CLAUDE_MODEL",
-    "claude-opus-4-6",
+    "claude-3-5-haiku-latest",
 )
 
 TARGETS = [
