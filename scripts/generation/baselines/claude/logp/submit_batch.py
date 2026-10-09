@@ -11,6 +11,8 @@ import anthropic
 from common import (
     ALLOWED_SHOTS,
     MANIFEST_DIR,
+    MAX_TOKENS,
+    TEMPERATURE,
     MODEL,
     N_PER_TARGET,
     OUTPUT_DIR,
@@ -44,12 +46,29 @@ def parse_args():
         help="Actually submit the prepared JSONL as an Anthropic batch.",
     )
     parser.add_argument("--model", default=MODEL)
-    parser.add_argument("--max-tokens", type=int, default=128)
+    parser.add_argument("--max-tokens", type=int, default=MAX_TOKENS)
+    parser.add_argument(
+        "--per-target",
+        type=int,
+        default=N_PER_TARGET,
+        help="Number of generations per target (default: existing setting).",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Optional maximum total requests for a small sanity run.",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+
+    if args.limit is not None and args.limit < 1:
+        raise SystemExit("--limit must be at least 1.")
+    if args.per_target < 1:
+        raise SystemExit("--per-target must be at least 1.")
 
     if args.strategy == "zero" and args.shots != 0:
         raise SystemExit("Strategy 'zero' requires --shots 0.")
@@ -79,7 +98,7 @@ def main():
         "shots": args.shots,
         "model": args.model,
         "seed": SEED,
-        "n_per_target": N_PER_TARGET,
+        "n_per_target": args.per_target,
         "targets": TARGETS,
         "train_path": str(__import__("common").TRAIN_PATH),
         "requests_file": str(jsonl_path),
@@ -88,63 +107,87 @@ def main():
         "requests": [],
     }
 
+    # A total --limit is distributed round-robin across targets.
+    if args.limit is None:
+        planned = [
+            (target_idx, repeat_idx)
+            for target_idx in range(len(TARGETS))
+            for repeat_idx in range(args.per_target)
+        ]
+    else:
+        planned = []
+        for repeat_idx in range(args.per_target):
+            for target_idx in range(len(TARGETS)):
+                if len(planned) >= args.limit:
+                    break
+                planned.append((target_idx, repeat_idx))
+            if len(planned) >= args.limit:
+                break
+
+    examples_by_target = {
+        target_idx: select_examples(
+            orders, args.strategy, target_idx, args.shots
+        )
+        for target_idx in range(len(TARGETS))
+    }
+
+    manifest["request_limit"] = args.limit
+    manifest["n_per_target"] = (
+        args.per_target if args.limit is None else None
+    )
+    manifest["target_request_counts"] = {}
+
     with jsonl_path.open("w", encoding="utf-8") as jf:
-        for target_idx, target in enumerate(TARGETS):
-            examples = select_examples(
-                orders,
-                args.strategy,
-                target_idx,
-                args.shots,
+        for target_idx, repeat_idx in planned:
+            target = TARGETS[target_idx]
+            examples = examples_by_target[target_idx]
+            custom_id = f"t{target_idx:02d}_r{repeat_idx + 1:02d}"
+            user_content = build_user_content(
+                target, examples, args.shots
             )
 
-            for repeat_idx in range(N_PER_TARGET):
-                custom_id = (
-                    f"t{target_idx:02d}_r{repeat_idx + 1:02d}"
-                )
-                user_content = build_user_content(
-                    target,
-                    examples,
-                    args.shots,
-                )
-
-                request = {
-                    "custom_id": custom_id,
-                    "params": {
-                        "model": args.model,
-                        "max_tokens": args.max_tokens,
-                        "temperature": 0.7,
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": SYSTEM_PROMPT,
-                                "cache_control": {
-                                    "type": "ephemeral",
-                                    "ttl": "1h",
-                                },
-                            }
-                        ],
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": user_content,
-                            }
-                        ],
-                    },
-                }
-
-                jf.write(json.dumps(request, ensure_ascii=False) + "\n")
-
-                manifest["requests"].append({
-                    "custom_id": custom_id,
-                    "target_index": target_idx,
-                    "target_logp": float(target),
-                    "repeat": repeat_idx + 1,
-                    "prompt_example_smiles": examples["smiles"].tolist(),
-                    "prompt_example_logp": [
-                        float(x) for x in examples["logp"].tolist()
+            request = {
+                "custom_id": custom_id,
+                "params": {
+                    "model": args.model,
+                    "max_tokens": args.max_tokens,
+                    "temperature": TEMPERATURE,
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": SYSTEM_PROMPT,
+                            "cache_control": {
+                                "type": "ephemeral",
+                                "ttl": "1h",
+                            },
+                        }
                     ],
-                    "status": "prepared",
-                })
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": user_content,
+                        }
+                    ],
+                },
+            }
+
+            jf.write(json.dumps(request, ensure_ascii=False) + "\n")
+            manifest["requests"].append({
+                "custom_id": custom_id,
+                "target_index": target_idx,
+                "target_logp": float(target),
+                "repeat": repeat_idx + 1,
+                "prompt_example_smiles": examples["smiles"].tolist(),
+                "prompt_example_logp": [
+                    float(x) for x in examples["logp"].tolist()
+                ],
+                "status": "prepared",
+            })
+
+            key = str(float(target))
+            manifest["target_request_counts"][key] = (
+                manifest["target_request_counts"].get(key, 0) + 1
+            )
 
     manifest["requests_file"] = str(jsonl_path)
 

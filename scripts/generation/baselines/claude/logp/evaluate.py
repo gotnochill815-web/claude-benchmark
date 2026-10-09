@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+from rdkit import Chem
 
 from common import (
     MANIFEST_DIR,
@@ -104,6 +105,10 @@ def main():
                 "raw_output": output,
                 "smiles": smiles,
                 "valid": valid,
+                "heavy_atom_5plus": (
+                    Chem.MolFromSmiles(smiles).GetNumHeavyAtoms() >= 5
+                    if valid else None
+                ),
                 "calculated_logp": predicted_logp,
                 "absolute_logp_error": (
                     abs(predicted_logp - target)
@@ -133,8 +138,8 @@ def main():
     detail["valid_num"] = detail["valid"].astype(int)
 
     summaries = []
-    for (run_id, strategy, shots, model), group in detail.groupby(
-        ["run_id", "strategy", "shots", "model"], dropna=False
+    for (run_id, strategy, shots, model, target_logp), group in detail.groupby(
+        ["run_id", "strategy", "shots", "model", "target_logp"], dropna=False
     ):
         valid = group[group["valid"]]
         valid_smiles = valid["smiles"].dropna()
@@ -145,11 +150,24 @@ def main():
         copy_values = valid["prompt_copy"].dropna()
         errors = valid["absolute_logp_error"].dropna()
 
+        if shots > 0 and len(copy_values) and copy_values.mean() > 0.10:
+            print(
+                f"WARNING: exact prompt-copy rate exceeds 10%: "
+                f"{run_id}, target LogP={target_logp}, "
+                f"rate={copy_values.mean():.1%}"
+            )
+
+        heavy_values = group["heavy_atom_5plus"].dropna()
+
         summaries.append({
             "run_id": run_id,
             "strategy": strategy,
             "shots": shots,
             "model": model,
+            "target_logp": target_logp,
+            "heavy_atom_5plus_rate": (
+                heavy_values.mean() if len(heavy_values) else None
+            ),
             "n_requests": n_total,
             "n_results": int((group["result_type"] != "missing_result").sum()),
             "valid_count": n_valid,
