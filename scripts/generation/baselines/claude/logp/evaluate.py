@@ -40,17 +40,22 @@ def main():
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    train_path = Path(
-        json.loads(next(MANIFEST_DIR.glob("*.json")).read_text())["train_path"]
-    )
-    train_set = load_canonical_set(train_path)
-
-    # Novelty is measured against the training set, as in the OpenAI baseline.
+    # Resolve manifests before accessing one, so an empty directory
+    # produces a useful error instead of StopIteration.
     manifests = sorted(MANIFEST_DIR.glob("*.json"))
     if args.run_id:
         manifests = [p for p in manifests if p.stem == args.run_id]
         if not manifests:
             raise SystemExit(f"No manifest found for run ID: {args.run_id}")
+    elif not manifests:
+        raise SystemExit(
+            f"No manifests found in {MANIFEST_DIR}. Prepare a benchmark first."
+        )
+
+    # Novelty is measured against the training set, as in the OpenAI baseline.
+    first_manifest = json.loads(manifests[0].read_text())
+    train_path = Path(first_manifest["train_path"])
+    train_set = load_canonical_set(train_path)
 
     rows = []
 
@@ -155,7 +160,7 @@ def main():
             "prompt_copy_rate": (
                 copy_values.mean() if shots > 0 and len(copy_values) else None
             ),
-            "logp_mad": errors.mean() if len(errors) else None,
+            "mean_absolute_logp_error": errors.mean() if len(errors) else None,
             "input_tokens": pd.to_numeric(
                 group["input_tokens"], errors="coerce"
             ).sum(min_count=1),
