@@ -1,0 +1,8 @@
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+
+# Local Claude benchmark outputs
+scripts/generation/baselines/claude/logp/results/*
+!scripts/generation/baselines/claude/logp/results/.gitkeep
