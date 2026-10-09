@@ -288,8 +288,21 @@ def test_evaluate_synthetic_results_writes_correct_metrics(
     assert set(detail["custom_id"]) == {"req-1", "req-2"}
     assert int(detail["valid"].sum()) == 1
 
-    assert len(summary) == 1
-    assert int(summary.loc[0, "n_requests"]) == 2
-    assert int(summary.loc[0, "valid_count"]) == 1
-    assert summary.loc[0, "validity"] == pytest.approx(0.5)
-    assert summary.loc[0, "uniqueness"] == pytest.approx(1.0)
+    assert len(summary) == 2
+    assert set(summary["target_logp"]) == {1.0, 2.0}
+
+    valid_target = summary.loc[summary["target_logp"] == 1.0].iloc[0]
+    invalid_target = summary.loc[summary["target_logp"] == 2.0].iloc[0]
+
+    assert valid_target["validity"] == 1.0
+    assert valid_target["heavy_atom_5plus_rate"] == 0.0
+    assert invalid_target["validity"] == 0.0
+    assert pd.isna(invalid_target["heavy_atom_5plus_rate"])
+    assert set(summary["n_requests"]) == {1}
+    assert set(summary["n_results"]) == {1}
+    assert int(valid_target["valid_count"]) == 1
+    assert valid_target["validity"] == pytest.approx(1.0)
+    assert valid_target["uniqueness"] == pytest.approx(1.0)
+
+    assert int(invalid_target["valid_count"]) == 0
+    assert invalid_target["validity"] == pytest.approx(0.0)
